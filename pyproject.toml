@@ -1,11 +1,15 @@
 [project]
 name = "pylsm"
 version = "0.1.0"
-requires-python = ">=3.11"
+description = "A from-scratch LSM-tree key-value storage engine (learning-grade, test-driven)."
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

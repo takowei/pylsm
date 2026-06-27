@@ -1,37 +1,35 @@
 # pylsm
 
-（請在此一句話描述這個專案的目標）
+一個從零手刻的 **LSM-tree 鍵值儲存引擎**（mini LevelDB/RocksDB 核心），作為作品集的「系統深度代表作」。設計與驗收標準見 `docs/BLUEPRINT.md`。
 
 ## 狀態（2026-06-27）
 
-🚧 剛建立。尚未實作業務邏輯。
+✅ **Phase 1 完成（親驗 14/14 測試綠）**：skiplist memtable + WAL（CRC framing）+ put/get/delete + 崩潰復原。
+🚧 後續：Phase 2 SSTable flush → Phase 3 bloom filter → Phase 4 compaction + benchmark。
 
 ## 技術棧
 
-Python 3.11+，ruff lint，pytest 測試
-
-## 關鍵檔案
-
-```
-src/__init__.py       ← 主入口（請更新此行描述）
-tests/       ← 測試套件
-CLAUDE.md    ← 本文件
-```
+Python 3.10+（純標準庫，無第三方執行期相依）、ruff lint、pytest。
 
 ## 目錄結構
 
 ```
-src/        ← 主程式碼\ntests/      ← pytest 測試
+pylsm/        ← 套件原始碼
+  skiplist.py ← 有序 memtable（手刻 skiplist）
+  wal.py      ← 預寫日誌（length-prefix + CRC32 framing，torn-tail 安全）
+  db.py       ← KV API：put/get/delete + 開啟時 WAL 重放復原
+tests/        ← pytest 測試（含 property oracle + 崩潰復原）
+docs/         ← BLUEPRINT.md（設計藍圖 + 驗收閘）
 ```
 
 ## 常用指令
 
 ```bash
-python -m pytest\nruff check src\nruff format src
+python -m pytest          # 跑測試
+ruff check pylsm tests    # lint
+ruff format pylsm tests   # 格式化
 ```
 
-## 下一步
+## 開發原則（驗收閘，見 BLUEPRINT）
 
-- [ ] 填寫上方「專案目標」描述
-- [ ] 實作主邏輯（src/__init__.py）
-- [ ] 補充關鍵檔案清單
+每階段須過：正確性親驗（property 對照）、崩潰復原可證、效能數字不灌水、ruff 全綠、誠實標狀態、核心手刻。
