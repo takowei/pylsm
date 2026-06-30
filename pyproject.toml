@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "A from-scratch LSM-tree key-value storage engine (learning-grade, test-driven)."
 requires-python = ">=3.10"
 
+[project.scripts]
+pylsm = "pylsm.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 

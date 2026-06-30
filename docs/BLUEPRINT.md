@@ -46,7 +46,7 @@
 | **2** | SSTable 落地（有序區塊 + 稀疏索引 + footer）+ memtable flush + 多層讀取合併         | 完成 |
 | **3** | Bloom filter（降低不存在鍵的磁碟讀）+ 讀路徑整合                                    | 完成 |
 | **4** | Leveled compaction + 讀寫放大量測 + benchmark（throughput / 放大比）                | 完成 |
-| 5     | 打包：CLI、README、效能報告（誠實數字、附量測方法）                                 | 規劃 |
+| **5** | 打包：CLI、README、效能報告（誠實數字、附量測方法）                                 | 完成 |
 
 ---
 
@@ -60,6 +60,21 @@
 4. **乾淨程式碼**：ruff format + lint 全綠；函式短、命名見名知意；不留死碼。
 5. **誠實狀態**：README/藍圖只標已驗證的為「完成」；未做的標「規劃」；已知限制明列（caveat）。
 6. **手刻核心**：skiplist、WAL framing、SSTable 格式、bloom、compaction 為自己實作，不引入現成嵌入式 KV。
+
+---
+
+## Phase 5 驗收閘對照（2026-06-30）
+
+| 閘  | 要求                                                           | 狀態                                            |
+| --- | -------------------------------------------------------------- | ----------------------------------------------- |
+| 1   | 正確性親驗：property oracle + 崩潰復原測試持續綠               | ✅ 105/105 tests green                          |
+| 2   | 崩潰復原可證：torn-tail CRC 測試、compaction crash 測試        | ✅ 同上，Phase 1-4 測試未刪除                   |
+| 3   | 效能數字不灌水：docs/PERFORMANCE.md 附機器/量測方法/caveat     | ✅ sync=off 明標、WSL2 caveat、WAL 未計 WA 說明 |
+| 4   | 乾淨程式碼：ruff format + lint 全綠                            | ✅ PostToolUse hook 強制通過                    |
+| 5   | 誠實狀態：README/BLUEPRINT 只標已驗證項目為完成；已知限制明列  | ✅ README Known Limitations 5 條                |
+| 6   | 手刻核心：skiplist、WAL、SSTable、bloom、compaction 全自行實作 | ✅ 無第三方 runtime 依賴                        |
+
+CLI 親驗（`python -m pylsm`）：put/get/scan/delete/compact/missing-key 全部正確，不存在的鍵以 exit code 1 + stderr 回報。
 
 ---
 
