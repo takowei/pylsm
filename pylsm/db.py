@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 
 from .skiplist import MISSING as _MEM_MISSING
 from .skiplist import SkipList
@@ -352,3 +353,94 @@ class DB:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    # ------------------------------------------------------------------
+    # Multi-level ordered scan (used by the MVCC layer)
+    # ------------------------------------------------------------------
+
+    def _scan_from(self, start: bytes = b"") -> Iterator[tuple[bytes, bytes]]:
+        """Yield ``(key, value)`` for all live entries with key ≥ *start*, ascending.
+
+        KV-level tombstones (from :meth:`delete`) are skipped.  When the same
+        physical key exists in multiple levels, the newest source wins
+        (memtable > L0 newest-first > L1 > …).  Uses a ``heapq`` multi-way merge.
+
+        This is an internal primitive — callers must not modify the DB while
+        iterating (single-threaded invariant).
+        """
+        import heapq
+
+        # Monotone counter keeps heap tuples unambiguously ordered even when
+        # key and priority match, so Python never tries to compare value/iterator.
+        _ctr: list[int] = [0]
+
+        def _next_tb() -> int:
+            v = _ctr[0]
+            _ctr[0] += 1
+            return v
+
+        # Each source is (priority, iterator-of-(key, raw_value)).
+        # Higher priority ≡ newer data; wins for the same physical key.
+        sources: list[tuple[int, Iterator[tuple[bytes, object]]]] = []
+        prio = 1_000_000  # large enough; decremented per source added
+
+        # Active memtable — always newest.
+        def _mem_gen() -> Iterator[tuple[bytes, object]]:
+            for k, v in self._mem.items():
+                if k >= start:
+                    yield k, v
+
+        sources.append((prio, _mem_gen()))
+        prio -= 1
+
+        # L0 SSTables, already stored newest-first.
+        if self._levels:
+            for _seq, sst in self._levels[0]:
+
+                def _l0_gen(r: SSTableReader = sst) -> Iterator[tuple[bytes, object]]:
+                    for k, v in r.items():
+                        if k >= start:
+                            yield k, v
+
+                sources.append((prio, _l0_gen()))
+                prio -= 1
+
+        # L1+ SSTables (sorted by min_key within each level).
+        for level_ssts in self._levels[1:]:
+            for _seq, sst in level_ssts:
+
+                def _ln_gen(r: SSTableReader = sst) -> Iterator[tuple[bytes, object]]:
+                    for k, v in r.items():
+                        if k >= start:
+                            yield k, v
+
+                sources.append((prio, _ln_gen()))
+                prio -= 1
+
+        # Heap entries: (key, neg_priority, tiebreak, raw_value, iterator).
+        # Comparison terminates at tiebreak (unique) so value/iterator are safe.
+        heap: list[tuple[bytes, int, int, object, object]] = []
+        for p, it in sources:
+            try:
+                k, v = next(it)  # type: ignore[call-overload]
+                heapq.heappush(heap, (k, -p, _next_tb(), v, it))
+            except StopIteration:
+                pass
+
+        last_key: bytes | None = None
+        while heap:
+            k, neg_p, _, raw, it = heapq.heappop(heap)
+
+            if k != last_key:
+                last_key = k
+                # Skip KV-level tombstones: memtable stores TOMBSTONE sentinel;
+                # SSTableReader.items() yields None for deleted entries.
+                if raw is not TOMBSTONE and raw is not None:
+                    yield k, raw  # type: ignore[misc]
+
+            # Advance the source that produced this entry.
+            try:
+                nk, nv = next(it)  # type: ignore[call-overload]
+                heapq.heappush(heap, (nk, neg_p, _next_tb(), nv, it))
+            except StopIteration:
+                pass
