@@ -155,3 +155,58 @@ class TestErrorHandling:
         p.write_bytes(b"\x00" * 4)
         with pytest.raises(ValueError, match="too small"):
             SSTableReader(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Bloom filter in SSTable
+# ---------------------------------------------------------------------------
+
+
+class TestBloomInSSTable:
+    def test_reader_has_bloom_when_entries_present(self, tmp_path):
+        """A non-empty SSTable must expose a bloom filter after loading."""
+        path = _write(tmp_path, [(b"key", b"val")])
+        r = SSTableReader(path)
+        assert r.bloom is not None
+
+    def test_empty_sstable_has_no_bloom(self, tmp_path):
+        """An SSTable with zero entries must set bloom to None."""
+        path = str(tmp_path / "empty.sst")
+        w = SSTableWriter(path)
+        w.finish()
+        r = SSTableReader(path)
+        assert r.bloom is None
+
+    def test_bloom_contains_all_written_keys(self, tmp_path):
+        """No false negatives: every written key must be found in the bloom."""
+        keys = [f"k{i:03}".encode() for i in range(20)]
+        path = _write(tmp_path, [(k, b"v") for k in keys])
+        r = SSTableReader(path)
+        for k in keys:
+            assert k in r.bloom, f"{k!r} missing from bloom (false negative)"
+
+    def test_bloom_contains_tombstone_keys(self, tmp_path):
+        """Tombstone entries must also be represented in the bloom filter."""
+        path = _write(tmp_path, [(b"live", b"v"), (b"tomb", None)])
+        r = SSTableReader(path)
+        assert b"live" in r.bloom
+        assert b"tomb" in r.bloom
+
+    def test_bloom_survives_disk_roundtrip(self, tmp_path):
+        """Bloom loaded from a freshly opened SSTableReader must still contain all keys."""
+        keys = [f"key{i}".encode() for i in range(10)]
+        path = _write(tmp_path, [(k, b"v") for k in keys])
+        # Re-open from disk (new reader instance).
+        r2 = SSTableReader(path)
+        for k in keys:
+            assert k in r2.bloom, f"{k!r} missing after disk roundtrip"
+
+    def test_bloom_works_across_multiple_blocks(self, tmp_path):
+        """Bloom must contain keys spread across many data blocks."""
+        # block_size=10 forces one block per entry.
+        keys = [f"k{i:02}".encode() for i in range(15)]
+        path = _write(tmp_path, [(k, b"x" * 20) for k in keys], block_size=10)
+        r = SSTableReader(path)
+        assert len(r._index) > 1, "expected multiple blocks"
+        for k in keys:
+            assert k in r.bloom

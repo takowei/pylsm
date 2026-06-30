@@ -14,18 +14,19 @@ LSM-trees power most modern write-heavy stores (RocksDB, Cassandra, LevelDB). Th
 
 ## Current status
 
-**Phase 2 complete — 45/45 tests green:**
+**Phase 3 complete — 79/79 tests green:**
 
 - **Skiplist memtable** — ordered in-memory map with expected O(log n) ops; ordered iteration drives the flush path.
 - **Write-ahead log** — every mutation is appended (length-prefix + CRC32 framing) _before_ the memtable; torn tail detected via CRC and safely discarded.
 - **Crash recovery** — WAL is replayed on open; every acknowledged write survives an unclean stop.
-- **SSTable (hand-rolled format)** — sorted data blocks + sparse index (one entry per block) + 16-byte footer (index offset + magic `0x7079_6C73`). No pickle, shelve, or embedded KV used.
+- **SSTable (hand-rolled format)** — sorted data blocks + sparse index (one entry per block) + 28-byte footer (index offset/length, bloom offset/length, magic `0x7079_6C73`). No pickle, shelve, or embedded KV used.
 - **Memtable flush** — when the memtable exceeds `flush_threshold_bytes`, it is frozen and written to a numbered SSTable (`sst_NNNNNNNN.sst`); the WAL is then truncated atomically (manifest updated first via `os.replace`).
 - **Multi-layer reads** — `get` searches active memtable → SSTables newest-first; first hit wins (tombstone = deleted, reported as `None`).
 - **Tombstone shadowing** — a delete in a newer layer correctly hides an older value in any earlier SSTable.
 - **Flush crash-safety** — crash before manifest update → orphaned SSTable ignored, WAL replayed; crash after manifest update → stale WAL content idempotent on replay. Both cases tested explicitly.
+- **Bloom filter (hand-rolled)** — each SSTable embeds a per-file bloom filter (Kirsch–Mitzenmacher double-hashing, pure stdlib `hashlib.sha256`). Parameters derived from entry count and target FPR (default 1 %): for 1 000 entries, m = 9 586 bits (1 199 bytes), k = 7. Measured FPR = 1.00 % (matches theoretical). `DB.get` checks the bloom before any block reads; an SSTable whose bloom rejects the key is skipped entirely.
 
-Planned: bloom filters (Phase 3) → leveled compaction + read/write-amplification benchmarks (Phase 4). See [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) for the full design and the per-phase acceptance gate.
+Planned: leveled compaction + read/write-amplification benchmarks (Phase 4). See [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) for the full design and the per-phase acceptance gate.
 
 ## Usage
 

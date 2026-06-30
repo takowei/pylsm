@@ -11,7 +11,9 @@ Binary layout
   ├──────────────────────────────────────────────────────────────────┤
   │  Index block  (one sparse-index entry per data block)            │
   ├──────────────────────────────────────────────────────────────────┤
-  │  Footer (16 bytes, fixed size)                                   │
+  │  Bloom block  (serialized BloomFilter; absent when 0 entries)    │
+  ├──────────────────────────────────────────────────────────────────┤
+  │  Footer (28 bytes, fixed size)                                   │
   └──────────────────────────────────────────────────────────────────┘
 
 Data entry wire format (variable length):
@@ -35,9 +37,16 @@ Index block wire format:
   num_entries : u32
   <index entries — variable length>
 
-Footer wire format (last FOOTER_SIZE = 16 bytes of the file):
+Bloom block wire format:
+  m   : u32  — number of bits in the bit array
+  k   : u8   — number of hash probe rounds
+  [⌈m/8⌉ bytes] — the bit array
+
+Footer wire format (last FOOTER_SIZE = 28 bytes of the file):
   index_offset : u64  — byte offset where the index block begins
   index_length : u32  — byte length of the index block
+  bloom_offset : u64  — byte offset where the bloom block begins (0 if absent)
+  bloom_length : u32  — byte length of the bloom block (0 if absent)
   magic        : u32  — always MAGIC (0x7079_6C73)
 """
 
@@ -49,6 +58,8 @@ import struct
 from collections.abc import Iterator
 from typing import Any
 
+from .bloom import BloomFilter
+
 # Target size (bytes) for each data block before starting a new one.
 BLOCK_SIZE = 4096
 
@@ -57,19 +68,23 @@ BLOCK_SIZE = 4096
 # we store the constant as written, not its wire representation.
 MAGIC: int = 0x7079_6C73
 
+# Default target false-positive rate for the per-SSTable bloom filter.
+_BLOOM_FPR: float = 0.01
+
 # Sentinel returned by SSTableReader.get when the key is present but deleted.
 TOMBSTONE: Any = object()
 
 # Sentinel returned by SSTableReader.get when the key is absent from this file.
 MISSING: Any = object()
 
-_FOOTER = struct.Struct("<QII")  # index_offset u64, index_length u32, magic u32
+# Footer: index_offset u64, index_length u32, bloom_offset u64, bloom_length u32, magic u32
+_FOOTER = struct.Struct("<QIQII")
 _U32 = struct.Struct("<I")
 _U64 = struct.Struct("<Q")
 _ENTRY_HDR = struct.Struct("<IB")  # klen u32, flags u8
 _VLEN = struct.Struct("<I")
 
-FOOTER_SIZE: int = _FOOTER.size  # 16 bytes
+FOOTER_SIZE: int = _FOOTER.size  # 28 bytes
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +145,15 @@ class SSTableWriter:
         self._pending_size: int = 0
         # Sparse index: (first_key, block_offset, block_length).
         self._index: list[tuple[bytes, int, int]] = []
+        # All keys added so far, used to build the bloom filter at finish() time.
+        self._all_keys: list[bytes] = []
 
     def add(self, key: bytes, value: bytes | None) -> None:
         """Append one entry.  Keys must be provided in strictly ascending order.
 
         ``value=None`` writes a tombstone (marks the key as deleted).
         """
+        self._all_keys.append(key)
         encoded = _encode_entry(key, value)
         self._pending.append(encoded)
         self._pending_size += len(encoded)
@@ -171,11 +189,27 @@ class SSTableWriter:
             )
         return idx_start, self._buf.tell() - idx_start
 
+    def _write_bloom(self) -> tuple[int, int]:
+        """Build and append the bloom filter; return (bloom_offset, bloom_length).
+
+        Returns ``(0, 0)`` when there are no entries (empty SSTable).
+        """
+        if not self._all_keys:
+            return 0, 0
+        bloom = BloomFilter(len(self._all_keys), _BLOOM_FPR)
+        for key in self._all_keys:
+            bloom.add(key)
+        bloom_bytes = bloom.to_bytes()
+        bloom_start = self._buf.tell()
+        self._buf.write(bloom_bytes)
+        return bloom_start, len(bloom_bytes)
+
     def finish(self) -> None:
-        """Seal the last block, append the index and footer, then fsync to disk."""
+        """Seal the last block, append index, bloom, and footer, then fsync."""
         self._seal_block()
         idx_off, idx_len = self._write_index()
-        self._buf.write(_FOOTER.pack(idx_off, idx_len, MAGIC))
+        bloom_off, bloom_len = self._write_bloom()
+        self._buf.write(_FOOTER.pack(idx_off, idx_len, bloom_off, bloom_len, MAGIC))
         with open(self._path, "wb", buffering=0) as f:
             f.write(self._buf.getvalue())
             os.fsync(f.fileno())
@@ -191,6 +225,11 @@ class SSTableReader:
 
     The entire file is loaded into a ``bytes`` buffer at construction so that
     repeated ``get`` calls pay no additional I/O.
+
+    Attributes:
+        bloom: the :class:`~pylsm.bloom.BloomFilter` loaded from the file, or
+               ``None`` for empty SSTables (no entries written).  Use it to
+               skip block reads for keys that are definitely absent.
     """
 
     def __init__(self, path: str) -> None:
@@ -199,6 +238,7 @@ class SSTableReader:
             self._data: bytes = f.read()
         # Sparse index entries: (first_key, block_offset, block_length).
         self._index: list[tuple[bytes, int, int]] = []
+        self.bloom: BloomFilter | None = None
         self._load_index()
 
     def _load_index(self) -> None:
@@ -206,9 +246,13 @@ class SSTableReader:
         footer_off = n - FOOTER_SIZE
         if footer_off < 0:
             raise ValueError(f"File too small to be an SSTable: {self.path!r}")
-        idx_off, idx_len, magic = _FOOTER.unpack_from(self._data, footer_off)
+        idx_off, idx_len, bloom_off, bloom_len, magic = _FOOTER.unpack_from(self._data, footer_off)
         if magic != MAGIC:
             raise ValueError(f"Bad magic 0x{magic:08X} in {self.path!r}; expected 0x{MAGIC:08X}")
+        # Load bloom filter when present.
+        if bloom_len > 0:
+            self.bloom = BloomFilter.from_bytes(self._data[bloom_off : bloom_off + bloom_len])
+        # Load sparse index.
         off = idx_off
         (num_entries,) = _U32.unpack_from(self._data, off)
         off += _U32.size

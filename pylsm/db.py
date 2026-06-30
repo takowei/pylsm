@@ -184,8 +184,10 @@ class DB:
         found = self._mem.get(key)
         if found is not _MEM_MISSING:
             return None if found is TOMBSTONE else found  # type: ignore[return-value]
-        # 2. SSTables, newest first.
+        # 2. SSTables newest-first; bloom filter skips files that cannot contain key.
         for sst in self._sstables:
+            if sst.bloom is not None and key not in sst.bloom:
+                continue
             result = sst.get(key)
             if result is not _SST_MISSING:
                 return None if result is TOMBSTONE else result  # type: ignore[return-value]

@@ -44,7 +44,7 @@
 | ----- | ----------------------------------------------------------------------------------- | ---- |
 | **1** | skiplist memtable + WAL（length-prefix + CRC32 framing）+ put/get/delete + 崩潰復原 | 完成 |
 | **2** | SSTable 落地（有序區塊 + 稀疏索引 + footer）+ memtable flush + 多層讀取合併         | 完成 |
-| 3     | Bloom filter（降低不存在鍵的磁碟讀）+ 讀路徑整合                                    | 規劃 |
+| **3** | Bloom filter（降低不存在鍵的磁碟讀）+ 讀路徑整合                                    | 完成 |
 | 4     | Leveled compaction + 讀寫放大量測 + benchmark（throughput / 放大比）                | 規劃 |
 | 5     | 打包：CLI、README、效能報告（誠實數字、附量測方法）                                 | 規劃 |
 
