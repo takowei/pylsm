@@ -2,10 +2,11 @@
 
 一個從零手刻的 **LSM-tree 鍵值儲存引擎**（mini LevelDB/RocksDB 核心），作為作品集的「系統深度代表作」。設計與驗收標準見 `docs/BLUEPRINT.md`。
 
-## 狀態（2026-06-27）
+## 狀態（2026-06-30）
 
-✅ **Phase 1 完成（親驗 14/14 測試綠）**：skiplist memtable + WAL（CRC framing）+ put/get/delete + 崩潰復原。
-🚧 後續：Phase 2 SSTable flush → Phase 3 bloom filter → Phase 4 compaction + benchmark。
+✅ **Phase 1 完成（14/14 測試綠）**：skiplist memtable + WAL（CRC framing）+ put/get/delete + 崩潰復原。
+✅ **Phase 2 完成（45/45 測試綠）**：SSTable（手刻格式：data blocks + sparse index + footer）+ memtable flush + multi-layer read + tombstone shadowing + crash-safe manifest。
+🚧 後續：Phase 3 bloom filter → Phase 4 compaction + benchmark。
 
 ## 技術棧
 

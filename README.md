@@ -14,14 +14,18 @@ LSM-trees power most modern write-heavy stores (RocksDB, Cassandra, LevelDB). Th
 
 ## Current status
 
-**Phase 1 complete — 14/14 tests green** (verified locally; `pytest` not yet run in CI pending first push):
+**Phase 2 complete — 45/45 tests green:**
 
-- **Skiplist memtable** — ordered in-memory map with expected O(log n) ops; ordered iteration for future flushing.
-- **Write-ahead log** — every mutation is appended (length-prefix + CRC32 framing) _before_ the memtable, so acknowledged writes survive a crash.
-- **Crash recovery** — on open, the WAL is replayed; a **torn final record** (partial write or bad checksum) is detected via CRC and safely discarded, never read as data.
-- **API** — `put` / `get` / `delete` over `bytes`; deletes write a tombstone (LSM never deletes in place).
+- **Skiplist memtable** — ordered in-memory map with expected O(log n) ops; ordered iteration drives the flush path.
+- **Write-ahead log** — every mutation is appended (length-prefix + CRC32 framing) _before_ the memtable; torn tail detected via CRC and safely discarded.
+- **Crash recovery** — WAL is replayed on open; every acknowledged write survives an unclean stop.
+- **SSTable (hand-rolled format)** — sorted data blocks + sparse index (one entry per block) + 16-byte footer (index offset + magic `0x7079_6C73`). No pickle, shelve, or embedded KV used.
+- **Memtable flush** — when the memtable exceeds `flush_threshold_bytes`, it is frozen and written to a numbered SSTable (`sst_NNNNNNNN.sst`); the WAL is then truncated atomically (manifest updated first via `os.replace`).
+- **Multi-layer reads** — `get` searches active memtable → SSTables newest-first; first hit wins (tombstone = deleted, reported as `None`).
+- **Tombstone shadowing** — a delete in a newer layer correctly hides an older value in any earlier SSTable.
+- **Flush crash-safety** — crash before manifest update → orphaned SSTable ignored, WAL replayed; crash after manifest update → stale WAL content idempotent on replay. Both cases tested explicitly.
 
-Planned: SSTable flush (Phase 2) → bloom filters (Phase 3) → leveled compaction + read/write-amplification benchmarks (Phase 4). See [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) for the full design and the per-phase acceptance gate.
+Planned: bloom filters (Phase 3) → leveled compaction + read/write-amplification benchmarks (Phase 4). See [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) for the full design and the per-phase acceptance gate.
 
 ## Usage
 
