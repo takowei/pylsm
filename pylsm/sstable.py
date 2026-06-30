@@ -132,6 +132,9 @@ class SSTableWriter:
         for key, value in sorted_pairs:   # value is bytes or None (tombstone)
             writer.add(key, value)
         writer.finish()                   # flushes, writes footer, fsyncs
+
+    After :meth:`finish` returns, :attr:`file_size` holds the number of bytes
+    written to disk (useful for write-amplification accounting).
     """
 
     def __init__(self, path: str, *, block_size: int = BLOCK_SIZE) -> None:
@@ -147,6 +150,8 @@ class SSTableWriter:
         self._index: list[tuple[bytes, int, int]] = []
         # All keys added so far, used to build the bloom filter at finish() time.
         self._all_keys: list[bytes] = []
+        # Set by finish(); bytes actually written to the file.
+        self.file_size: int = 0
 
     def add(self, key: bytes, value: bytes | None) -> None:
         """Append one entry.  Keys must be provided in strictly ascending order.
@@ -210,8 +215,10 @@ class SSTableWriter:
         idx_off, idx_len = self._write_index()
         bloom_off, bloom_len = self._write_bloom()
         self._buf.write(_FOOTER.pack(idx_off, idx_len, bloom_off, bloom_len, MAGIC))
+        data = self._buf.getvalue()
+        self.file_size = len(data)
         with open(self._path, "wb", buffering=0) as f:
-            f.write(self._buf.getvalue())
+            f.write(data)
             os.fsync(f.fileno())
 
 
@@ -230,6 +237,10 @@ class SSTableReader:
         bloom: the :class:`~pylsm.bloom.BloomFilter` loaded from the file, or
                ``None`` for empty SSTables (no entries written).  Use it to
                skip block reads for keys that are definitely absent.
+        min_key: the first key in this SSTable (lowest in sort order), or
+                 ``None`` for an empty file.
+        max_key: the last key in this SSTable (highest in sort order), or
+                 ``None`` for an empty file.
     """
 
     def __init__(self, path: str) -> None:
@@ -239,6 +250,8 @@ class SSTableReader:
         # Sparse index entries: (first_key, block_offset, block_length).
         self._index: list[tuple[bytes, int, int]] = []
         self.bloom: BloomFilter | None = None
+        self.min_key: bytes | None = None
+        self.max_key: bytes | None = None
         self._load_index()
 
     def _load_index(self) -> None:
@@ -266,6 +279,13 @@ class SSTableReader:
             (block_len,) = _U32.unpack_from(self._data, off)
             off += _U32.size
             self._index.append((first_key, block_off, block_len))
+        # Derive key range from the index.
+        if self._index:
+            self.min_key = self._index[0][0]
+            # max_key: last key in the last block (data is in memory, so cheap).
+            _, last_block_off, last_block_len = self._index[-1]
+            last_entries = self._read_block(last_block_off, last_block_len)
+            self.max_key = last_entries[-1][0] if last_entries else None
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -5,6 +5,10 @@ Verifies that:
   - The bloom contains all keys written to that SSTable.
   - DB.get skips an SSTable's block reads when bloom says the key is absent.
   - DB.get proceeds to block reads when bloom says the key may be present.
+
+Note: tests that check SSTable counts pass ``l0_compaction_trigger=100`` so
+that automatic compaction does not fire during the test, which would change
+the number of on-disk SSTables.
 """
 
 from __future__ import annotations
@@ -13,11 +17,14 @@ from unittest.mock import patch
 
 from pylsm import DB
 
+# Prevent compaction from firing in count-sensitive tests.
+_NO_COMPACT = {"l0_compaction_trigger": 100}
+
 
 class TestBloomLoadedByDB:
     def test_each_sstable_has_bloom(self, tmp_path):
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             db.put(b"hello", b"world")
             db._flush()
             assert len(db._sstables) == 1
@@ -25,7 +32,7 @@ class TestBloomLoadedByDB:
 
     def test_bloom_present_after_multiple_flushes(self, tmp_path):
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             for i in range(5):
                 db.put(f"k{i}".encode(), b"v")
                 db._flush()
@@ -35,7 +42,7 @@ class TestBloomLoadedByDB:
 
     def test_bloom_contains_written_key(self, tmp_path):
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             db.put(b"exists", b"val")
             db._flush()
             sst = db._sstables[0]
@@ -44,7 +51,7 @@ class TestBloomLoadedByDB:
     def test_bloom_loaded_after_reopen(self, tmp_path):
         """Bloom must be restored from disk when the DB is reopened."""
         db_path = str(tmp_path / "db")
-        db = DB(db_path, sync=False, flush_threshold_bytes=1)
+        db = DB(db_path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT)
         db.put(b"persisted", b"v")
         db._flush()
         db.close()
@@ -60,7 +67,7 @@ class TestBloomSkipsBlockReads:
         """When bloom is replaced with one that always returns False, DB.get
         must not invoke SSTableReader.get (block reads are avoided entirely)."""
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             db.put(b"exists", b"val")
             db._flush()
             sst = db._sstables[0]
@@ -80,7 +87,7 @@ class TestBloomSkipsBlockReads:
     def test_get_consults_sstable_when_bloom_accepts(self, tmp_path):
         """When bloom says 'maybe present', DB.get must proceed to block lookup."""
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             db.put(b"exists", b"val")
             db._flush()
             sst = db._sstables[0]
@@ -99,7 +106,7 @@ class TestBloomSkipsBlockReads:
         the key is still absent (None).
         """
         path = str(tmp_path / "db")
-        with DB(path, sync=False, flush_threshold_bytes=1) as db:
+        with DB(path, sync=False, flush_threshold_bytes=1, **_NO_COMPACT) as db:
             # Write distinct keys into two separate SSTables.
             db.put(b"aaa", b"1")
             db._flush()
