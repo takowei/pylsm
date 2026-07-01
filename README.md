@@ -1,20 +1,23 @@
 # pylsm
 
-> A from-scratch **LSM-tree key-value storage engine** in Python — the core
-> ideas behind LevelDB / RocksDB, built to demonstrate a real grasp of storage
-> engine mechanics.
+> A from-scratch **LSM-tree key-value storage engine with MVCC transactions**
+> in Python — the core ideas behind LevelDB / RocksDB, built to demonstrate a
+> real grasp of storage-engine mechanics.
 
 The intellectual core is entirely hand-written: skiplist, WAL framing, crash
-recovery, SSTables, bloom filters, and leveled compaction. No embedded KV
-library is used. The goal is not to beat RocksDB; it is to demonstrate a real
-grasp of storage-engine mechanics and back every claim with tests and honest
-measurement.
+recovery, SSTables, bloom filters, leveled compaction, and a multi-version
+concurrency-control layer with snapshot isolation. No embedded KV library is
+used. The goal is not to beat RocksDB; it is to demonstrate a real grasp of
+storage-engine mechanics and back every claim with tests and honest measurement.
 
 **No third-party runtime dependencies** — pure Python standard library.
 
 ---
 
-## Status — all five phases complete (105/105 tests green)
+## Status — storage engine complete, 132/132 tests green
+
+The engine is a coherent, finished product: a durable, crash-safe LSM key-value
+store with a multi-version transaction layer providing snapshot isolation.
 
 | Phase | Content                                                                 | Status |
 | ----- | ----------------------------------------------------------------------- | ------ |
@@ -23,6 +26,12 @@ measurement.
 | 3     | Bloom filter (hand-rolled) + read-path integration                      | Done   |
 | 4     | Leveled compaction + WA/RA measurement + benchmark harness              | Done   |
 | 5     | CLI (`pylsm` / `python -m pylsm`) + README + performance report         | Done   |
+| DB-1  | **MVCC multi-version storage + snapshot isolation**                     | Done   |
+
+A relational SQL layer on top of this engine (table encoding, a SQL tokenizer /
+parser, and a SELECT/DELETE executor) is sketched in
+[`docs/BLUEPRINT-DB.md`](docs/BLUEPRINT-DB.md) as a **future roadmap** — it is
+not part of the current finished engine.
 
 ---
 
@@ -36,7 +45,7 @@ sequential writes vs. random reads, durability vs. speed.
 
 ---
 
-## Design in one diagram
+## Storage engine in one diagram
 
 ```
    put/delete                              get
@@ -73,7 +82,58 @@ sequential writes vs. random reads, durability vs. speed.
 
 ---
 
+## MVCC and snapshot isolation
+
+The `MVCCEngine` layer turns the single-value KV store into a **multi-version**
+store: no write ever overwrites in place. Every `put` / `delete` is stamped with
+a monotonically increasing sequence number and stored as a distinct _physical_
+key, so old versions coexist with new ones. A `Snapshot` captures the sequence
+number at a point in time; reads through it see exactly the state committed up to
+that seq, no matter what is written afterwards.
+
+**The key trick — inverted-seq physical keys.** Each logical write is encoded as:
+
+```
+physical_key = u32be(len(user_key)) | user_key | u64be(MAX_U64 − seq)
+```
+
+The `MAX_U64 − seq` term inverts the sequence number, so a _higher_ seq produces
+a _smaller_ physical key. All versions of one user key are grouped by the
+length-prefixed user key, and within that group the newest version sorts first.
+Reading `user_key` as of `snapshot_seq` is then a single forward scan starting at
+`encode(user_key, snapshot_seq)`: any version with `seq > snapshot_seq` has a
+_smaller_ key and sits before the scan start, so it is naturally excluded, and
+the first hit is the latest version `≤ snapshot_seq`. Snapshot isolation falls
+out of the key encoding — no per-read version filtering is needed.
+
+Values carry a one-byte tag: `\x00` + bytes for a live value, `\x01` for a
+tombstone. The underlying KV's own delete mechanism is never used — deletion is
+just another version.
+
+**Crash-safe sequence counter.** The global seq is persisted in the KV under a
+reserved meta key (whose length prefix decodes to an impossible ~4 GiB user-key
+length, so it can never collide with a real physical key). The counter is
+written _before_ the data key on every write, so after a crash the recovered seq
+is always `≥` the highest committed version — the counter can never fall behind
+the data.
+
+```python
+from pylsm import DB, MVCCEngine
+
+with DB("./data") as raw_db:
+    engine = MVCCEngine(raw_db)
+    engine.put(b"k", b"v1")
+    snap = engine.snapshot()             # freeze the read view here
+    engine.put(b"k", b"v2")              # invisible to snap
+    assert snap.get(b"k") == b"v1"       # snapshot isolation
+    assert engine.get(b"k") == b"v2"     # current committed state
+```
+
+---
+
 ## Python API
+
+### Raw key-value store
 
 ```python
 from pylsm import DB
@@ -97,12 +157,28 @@ db.stats.read_amplification       # SSTs block-scanned (after bloom) / get calls
 db.compact()                      # manually trigger compaction
 ```
 
+### MVCC transaction layer
+
+```python
+from pylsm import DB, MVCCEngine
+
+with DB("./data") as raw_db:
+    engine = MVCCEngine(raw_db)
+    seq = engine.put(b"k", b"v")   # returns the assigned sequence number
+    engine.delete(b"k")            # tombstone at a new seq
+    engine.get(b"k")               # current committed value, or None
+    snap = engine.snapshot()       # Snapshot at the current seq
+    snap.get(b"k")                 # read as of the snapshot
+    list(engine.scan())            # all live (user_key, value) pairs
+    engine.current_seq             # highest seq assigned so far
+```
+
 ---
 
 ## CLI
 
 After `pip install -e .` the `pylsm` command is available. It is also
-runnable as `python -m pylsm`.
+runnable as `python -m pylsm`. The CLI drives the raw KV store.
 
 ```
 pylsm put    <dir> <key> <value>   store a key/value pair (UTF-8 strings)
@@ -140,7 +216,9 @@ $ echo $?
 
 All numbers measured with `sync=False` on WSL2 (Intel Core i7-14700HX,
 15.5 GiB RAM). See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for
-full methodology, machine details, and caveats.
+full methodology, machine details, and caveats. The figures below cover the raw
+KV engine; the MVCC layer adds a second underlying `put` per write (the seq meta
+key), so MVCC write throughput is roughly half the raw numbers.
 
 | Workload          | Throughput      | Write amplification |
 | ----------------- | --------------- | ------------------- |
@@ -172,12 +250,16 @@ pip install -e ".[dev]"
 pytest
 ```
 
-105 tests across nine files:
+132 tests across eleven test modules:
 
-- **Property-based oracle** (`test_property.py`): 3 000 random put/delete/get
-  operations run against both the engine and a plain `dict`; the DB is reopened
-  mid-sequence to exercise crash recovery. The two must agree on every key
-  throughout.
+- **Property-based oracle** (`test_property.py`): thousands of random
+  put/delete/get operations run against both the engine and a plain `dict`; the
+  DB is reopened mid-sequence to exercise crash recovery. The two must agree on
+  every key throughout.
+- **MVCC and snapshot isolation** (`test_mvcc.py`): version visibility,
+  snapshot isolation across interleaved writes, tombstones vs. old snapshots,
+  arbitrary-byte keys, seq persistence and crash recovery (recovered seq never
+  behind committed data), and physical-key ordering.
 - **Torn-tail and CRC corruption** (`test_wal.py`): WAL entries truncated at
   arbitrary byte boundaries are detected via CRC32 and safely discarded.
 - **Compaction crash scenarios** (`test_compaction.py`): orphaned SSTable
@@ -193,13 +275,18 @@ pytest
 
 ## Known limitations
 
-1. **Single-threaded** — no concurrency support.
-2. **No block cache** — entire SSTable loaded into memory on open; "read
+1. **Single-threaded** — no concurrency support; the MVCC layer provides
+   snapshot isolation for sequential access, not concurrent transactions.
+2. **No MVCC version GC** — every write appends a new version; old versions
+   accumulate until a future compaction-time GC is added.
+3. **MVCC doubles underlying writes** — the seq meta key is persisted before
+   each data key, so one logical write is two underlying `put`s.
+4. **No block cache** — entire SSTable loaded into memory on open; "read
    throughput" is in-memory, not disk-I/O-bound.
-3. **Benchmark covers L0 → L1 only** — insufficient data to trigger L1 → L2
+5. **Benchmark covers L0 → L1 only** — insufficient data to trigger L1 → L2
    compaction; WA would be higher with deeper levels.
-4. **WAL not counted in WA** — total WA ≈ WA_sstable + 1.
-5. **WSL2 storage** — measurements on WSL2's virtual disk, which differs from
+6. **WAL not counted in WA** — total WA ≈ WA_sstable + 1.
+7. **WSL2 storage** — measurements on WSL2's virtual disk, which differs from
    bare-metal SSD.
 
 ---
@@ -208,7 +295,7 @@ pytest
 
 ```
 pylsm/
-  __init__.py    public API (DB, DBStats)
+  __init__.py    public API (DB, DBStats, MVCCEngine, Snapshot)
   __main__.py    python -m pylsm entry point
   cli.py         CLI (argparse, pure stdlib)
   db.py          KV store: put/get/delete + flush + compaction trigger
@@ -217,10 +304,15 @@ pylsm/
   sstable.py     SSTable writer + reader (hand-rolled binary format)
   bloom.py       bloom filter (Kirsch-Mitzenmacher double-hashing)
   compaction.py  leveled compaction (heapq multi-way merge)
+  mvcc.py        MVCC layer: multi-version storage + snapshot isolation
   stats.py       WA / RA counters
-tests/           pytest suite (105 tests)
+tests/           pytest suite (132 tests across eleven modules)
 bench/           benchmark harness (run_bench.py)
 docs/
-  BLUEPRINT.md   design rationale + per-phase acceptance gates
-  PERFORMANCE.md measured numbers + full methodology
+  BLUEPRINT.md    design rationale + per-phase acceptance gates (KV engine)
+  BLUEPRINT-DB.md future roadmap: relational SQL layer (not yet built)
+  PERFORMANCE.md  measured numbers + full methodology
 ```
+
+</content>
+</invoke>

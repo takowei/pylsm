@@ -1,8 +1,17 @@
 # pylsm-db — 設計藍圖：MVCC + mini SQL 查詢引擎
 
-> 這份文件是 `docs/BLUEPRINT.md`（LSM-tree KV 引擎五階段）的延伸。  
-> 前五個 Phase 已完成（105/105 測試綠）。這裡規劃在 KV 之上疊 MVCC 多版本
-> 與 mini SQL 查詢引擎，把 pylsm 升級成一個 mini relational database。
+> **狀態（2026-07-01）**：**DB-1（MVCC + 快照隔離）已完成、132/132 測試綠、併入完成品。**
+> DB-2 → DB-4（table 編碼、SQL tokenizer/parser、SELECT/DELETE 執行器）目前
+> **列為未來 roadmap、尚未動工**——決策見下。此檔記錄完整設計，供日後續建或面試展示藍圖能力。
+>
+> **為何在 DB-1 收尾**（2026-07-01 拍板）：pylsm 的目的是填「系統深度代表作」缺口。
+> DB-1 的 MVCC + snapshot isolation + LSM + 崩潰復原已達成該訊號；再往上疊 SQL parser
+> 邊際效益陡降（parser 偏編譯器、爛大街），且「完成且打磨的 KV+MVCC 引擎」在作品集上
+> 的訊號強過「做到一半的 SQL DB」。故將 KV+MVCC 定為完成品，SQL 層留作 roadmap。
+>
+> 這份文件是 `docs/BLUEPRINT.md`（LSM-tree KV 引擎五階段）的延伸。
+> 前五個 Phase + DB-1 已完成。以下規劃在 KV+MVCC 之上疊 mini SQL 查詢引擎，
+> 把 pylsm 升級成一個 mini relational database。
 >
 > **寫作原則**：每個 Phase 都有鎖死的範圍邊界與驗收閘；「非目標」比「目標」更重要。
 
