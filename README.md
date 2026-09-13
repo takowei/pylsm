@@ -4,6 +4,14 @@
 > in Python — the core ideas behind LevelDB / RocksDB, built to demonstrate a
 > real grasp of storage-engine mechanics.
 
+I built this after noticing that most of my other work — validating a trading
+strategy, checking an agent's benchmark score, reviewing a GitHub repo before
+depending on it — comes down to the same question: can I actually trust what
+a system claims about itself. A storage engine is a good place to run that
+habit end to end, because every claim (crash safety, snapshot isolation,
+bloom filter false-positive rate) can be checked against a reference
+implementation instead of assumed correct because the code compiles.
+
 The intellectual core is entirely hand-written: skiplist, WAL framing, crash
 recovery, SSTables, bloom filters, leveled compaction, and a multi-version
 concurrency-control layer with snapshot isolation. No embedded KV library is
