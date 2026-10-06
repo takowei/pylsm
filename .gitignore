@@ -5,3 +5,7 @@ dist/
 .ruff_cache/
 .pytest_cache/
 *.egg-info/
+
+# local AI-assistant notes and settings
+CLAUDE.md
+.claude/
